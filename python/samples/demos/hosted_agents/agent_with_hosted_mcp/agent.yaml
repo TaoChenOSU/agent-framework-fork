@@ -1,5 +1,5 @@
 # Unique identifier/name for this agent
-name: agent_with_hosted_mcp
+name: agent-with-hosted-mcp
 # Brief description of what this agent does
 description: >
   An AI agent that uses OpenAI Responses with a Hosted Model Context Protocol (MCP) server.
@@ -16,7 +16,7 @@ metadata:
     - Model Context Protocol
     - MCP
 template:
-  name: agent_with_hosted_mcp
+  name: agent-with-hosted-mcp
   # The type of agent - "hosted" for HOBO, "container" for COBO
   kind: hosted
   protocols:
