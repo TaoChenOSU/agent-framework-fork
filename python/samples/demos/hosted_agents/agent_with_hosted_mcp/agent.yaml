@@ -22,7 +22,7 @@ template:
   protocols:
     - protocol: responses
   environment_variables:
-    - name: OPENAI_CHAT_MODEL_ID
-      value: ${OPENAI_CHAT_MODEL_ID}
-    - name: OPENAI_API_KEY
-      value: ${OPENAI_API_KEY}
+    - name: AZURE_OPENAI_CHAT_DEPLOYMENT_NAME
+      value: ${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME}
+    - name: AZURE_OPENAI_ENDPOINT
+      value: ${AZURE_OPENAI_ENDPOINT}
