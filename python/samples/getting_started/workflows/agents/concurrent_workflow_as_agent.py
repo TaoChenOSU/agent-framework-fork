@@ -20,20 +20,7 @@ Demonstrates:
 
 Prerequisites:
 - Azure OpenAI access configured for AzureOpenAIChatClient (use az login + env vars)
-- Familiarity with Workflow events (AgentRunEvent, WorkflowOutputEvent)
 """
-
-
-def clear_and_redraw(buffers: dict[str, str], agent_order: list[str]) -> None:
-    """Clear terminal and redraw all agent outputs grouped together."""
-    # ANSI escape: clear screen and move cursor to top-left
-    print("\033[2J\033[H", end="")
-    print("===== Concurrent Agent Streaming (Live) =====\n")
-    for name in agent_order:
-        print(f"--- {name} ---")
-        print(buffers.get(name, ""))
-        print()
-    print("", end="", flush=True)
 
 
 async def main() -> None:
@@ -72,10 +59,9 @@ async def main() -> None:
     prompt = "We are launching a new budget-friendly electric bike for urban commuters."
 
     agent_response = await agent.run(prompt)
-    print("===== Final Aggregated Response =====\n")
+    print("===== Aggregated Response =====\n")
     for message in agent_response.messages:
         # The agent_response contains messages from all participants
-        # TODO: How to get the individual messages here?
         print(f"{message.author_name}: {message.text}\n")
 
 

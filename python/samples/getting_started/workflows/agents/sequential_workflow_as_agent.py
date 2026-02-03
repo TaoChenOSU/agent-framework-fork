@@ -13,13 +13,6 @@ The script assembles a sequential conversation flow with `SequentialBuilder`, th
 invokes the entire orchestration through the `workflow.as_agent(...)` interface so
 other coordinators can reuse the chain as a single participant.
 
-Note on internal adapters:
-- Sequential orchestration includes small adapter nodes for input normalization
-  ("input-conversation"), agent-response conversion ("to-conversation:<participant>"),
-  and completion ("complete"). These may appear as ExecutorInvoke/Completed events in
-  the stream—similar to how concurrent orchestration includes a dispatcher/aggregator.
-  You can safely ignore them when focusing on agent progress.
-
 Prerequisites:
 - Azure OpenAI access configured for AzureOpenAIChatClient (use az login + env vars)
 """
