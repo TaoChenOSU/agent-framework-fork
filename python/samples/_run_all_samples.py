@@ -14,6 +14,7 @@ Usage:
                                                        # assumes environment is set up)
     python run_all_samples.py --subdir <directory>     # Run samples only in specific subdirectory
     python run_all_samples.py --subdir getting_started/workflows  # Example: run only workflow samples
+    python run_all_samples.py --timeout 120            # Set timeout to 120 seconds per sample
 """
 
 import argparse
@@ -56,6 +57,7 @@ def run_sample(
     sample_path: Path,
     use_uv: bool = True,
     python_root: Path | None = None,
+    timeout: int = 60,
 ) -> tuple[bool, str, str, str]:
     """
     Run a single sample file using subprocess and return (success, output, error_info, error_type).
@@ -64,6 +66,7 @@ def run_sample(
         sample_path: Path to the sample file
         use_uv: Whether to use uv run
         python_root: Root directory for uv run
+        timeout: Timeout in seconds for the sample execution
 
     Returns:
         Tuple of (success, output, error_info, error_type)
@@ -101,7 +104,7 @@ def run_sample(
             # input="" sends an empty string to stdin, which causes input() calls to
             # immediately receive EOFError (End Of File) since there's no data to read.
             # This prevents the process from hanging indefinitely waiting for user input.
-            stdout, stderr = process.communicate(input="", timeout=60)
+            stdout, stderr = process.communicate(input="", timeout=timeout)
         except subprocess.TimeoutExpired:
             # If the process doesn't complete within the timeout period, we need to
             # forcibly terminate it. This is especially important for processes that
@@ -118,7 +121,7 @@ def run_sample(
                 # when kill() doesn't on some systems
                 process.terminate()
                 stdout, stderr = "", "Process forcibly terminated"
-            return False, "", f"TIMEOUT: {sample_path.name} (exceeded 60 seconds)", "timeout"
+            return False, "", f"TIMEOUT: {sample_path.name} (exceeded {timeout} seconds)", "timeout"
 
         if process.returncode == 0:
             output = stdout.strip() if stdout.strip() else "No output"
@@ -153,6 +156,7 @@ Examples:
   python run_all_samples.py --subdir getting_started           # Run only getting_started samples
   python run_all_samples.py --subdir getting_started/workflows # Run only workflow samples
   python run_all_samples.py --subdir semantic-kernel-migration # Run only SK migration samples
+  python run_all_samples.py --timeout 120                      # Set 120 second timeout
         """,
     )
 
@@ -166,6 +170,13 @@ Examples:
 
     parser.add_argument(
         "--max-workers", type=int, default=16, help="Maximum number of concurrent workers (default: 16)"
+    )
+
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=60,
+        help="Timeout in seconds for each sample (default: 60)",
     )
 
     return parser.parse_args()
@@ -207,7 +218,13 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         # Submit all tasks
         future_to_sample = {
-            executor.submit(run_sample, sample_path, not args.direct, python_root): sample_path
+            executor.submit(
+                run_sample,
+                sample_path,
+                not args.direct,
+                python_root,
+                args.timeout,
+            ): sample_path
             for sample_path in sample_files
         }
 

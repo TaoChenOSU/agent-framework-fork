@@ -106,7 +106,7 @@ async def main() -> None:
     # and escalation paths for human review.
     worker = Worker(
         id="worker",
-        chat_client=AzureOpenAIResponsesClient(
+        client=AzureOpenAIResponsesClient(
             project_endpoint=os.environ["AZURE_AI_PROJECT_ENDPOINT"],
             deployment_name=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
             credential=AzureCliCredential(),
