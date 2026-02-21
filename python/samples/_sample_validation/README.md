@@ -1,6 +1,6 @@
 # Sample Validation System
 
-An AI-powered workflow system for validating Python samples by discovering them, dynamically creating a nested concurrent workflow, and producing a report.
+An AI-powered workflow system for validating Python samples by discovering them, creating a nested batched workflow, and producing a report.
 
 ## Architecture
 
@@ -14,12 +14,12 @@ An AI-powered workflow system for validating Python samples by discovering them,
         ▼                          ▼                          ▼
 ┌───────────────┐        ┌─────────────────┐        ┌─────────────────┐
 │   Discover    │   ──►  │ Create Dynamic  │   ──►  │ Run Nested      │
-│   Samples     │        │ Concurrent Flow │        │ Workflow        │
+│   Samples     │        │ Batched Flow    │        │ Workflow        │
 └───────────────┘        └─────────────────┘        └─────────────────┘
         │                          │                          │
         ▼                          ▼                          ▼
   List[SampleInfo]          WorkflowCreationResult      ExecutionResult
-                           (N GitHub agents)                 │
+                        (workers + coordinator)              │
                                                              ▼
                                                     ┌─────────────────┐
                                                     │ Generate Report │
@@ -33,15 +33,15 @@ An AI-powered workflow system for validating Python samples by discovering them,
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│               Nested Concurrent Workflow (dynamic)                   │
+│             Nested Batched Workflow (coordinator + workers)          │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  ┌─────────────────────────────────────────────────────────────┐   │
-│  │ ConcurrentBuilder(participants=[agent_1 ... agent_N])      │   │
-│  │ - N equals number of discovered samples                     │   │
-│  │ - Each agent validates one assigned sample                  │   │
-│  │ - Agents run in parallel using GitHub Copilot              │   │
-│  │ - Custom aggregator converts agent JSON -> RunResult        │   │
+│  │ WorkflowBuilder + fan-out/fan-in edges                      │   │
+│  │ - Coordinator dispatches tasks in bounded batches           │   │
+│  │ - Worker executors run GitHub Copilot agents               │   │
+│  │ - Collector aggregates per-sample RunResult messages       │   │
+│  │ - Max in-flight workers set by --max-parallel-workers      │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -65,11 +65,10 @@ samples/
 │   │   ├── save_report()        # Write to markdown/JSON
 │   │   ├── print_summary()      # Console output
 │   │   └── GenerateReportExecutor
-│   ├── workflow_types.py        # Shared dataclasses for workflow steps
-│   ├── create_dynamic_workflow_executor.py # CreateConcurrentValidationWorkflowExecutor
+│   ├── create_dynamic_workflow_executor.py # Coordinator, workers, collector, CreateConcurrentValidationWorkflowExecutor
 │   ├── run_dynamic_validation_workflow_executor.py # RunDynamicValidationWorkflowExecutor
 │   └── workflow.py              # Workflow assembly entrypoint
-├── __main__.py              # CLI entry point
+├── __main__.py                  # CLI entry point
 ```
 
 ## Dependencies
@@ -77,7 +76,6 @@ samples/
 ### Required
 
 - **agent-framework** - Core workflow and agent functionality
-- **agent-framework-orchestrations** - ConcurrentBuilder for fan-out/fan-in
 - **agent-framework-github-copilot** - GitHub Copilot agent integration
 
 ### Optional
@@ -116,6 +114,7 @@ uv run python -m _sample_validation [OPTIONS]
 Options:
   --subdir TEXT                Subdirectory to validate (relative to samples/)
   --output-dir TEXT            Report output directory (default: ./_sample_validation/reports)
+  --max-parallel-workers INT   Max in-flight workers per batch (default: 10)
   --save-report                      Save reports to files
 ```
 
@@ -124,6 +123,9 @@ Options:
 ```bash
 # Quick validation of a small directory
 uv run python -m _sample_validation --subdir 03-workflows/_start-here
+
+# Limit parallel workers for large sample sets
+uv run python -m _sample_validation --subdir 02-agents --max-parallel-workers 8
 
 # Save report artifacts
 uv run python -m _sample_validation --save-report
@@ -141,17 +143,17 @@ Walks the samples directory and finds all `.py` files that:
 
 ### 2. Dynamic Workflow Creation
 
-Creates a nested `ConcurrentBuilder` workflow with one GitHub Copilot agent per sample.
+Creates a nested workflow with:
 
-Each agent receives:
-
-- The sample path
-- Full source code
-- A strict JSON output schema for validation result
+- A coordinator executor
+- One worker executor per discovered sample
+- A collector executor
 
 ### 3. Nested Workflow Execution
 
-Runs all per-sample agents in parallel. A custom aggregator converts each agent response into `RunResult`.
+The coordinator sends initial work to the first `max_parallel_workers` workers. As each worker finishes, it notifies
+the coordinator, which dispatches the next queued sample. Workers also send result items to the collector, which emits
+the final `ExecutionResult` once all samples are processed.
 
 ### 4. Report Generation
 

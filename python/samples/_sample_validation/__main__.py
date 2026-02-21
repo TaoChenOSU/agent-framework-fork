@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 # Add the samples directory to the path for imports
@@ -61,6 +62,13 @@ Examples:
         help="Save the validation report to files",
     )
 
+    parser.add_argument(
+        "--max-parallel-workers",
+        type=int,
+        default=10,
+        help="Maximum number of samples to run in parallel per batch (default: 10)",
+    )
+
     return parser.parse_args()
 
 
@@ -86,6 +94,7 @@ async def main() -> int:
         samples_dir=samples_dir,
         python_root=python_root,
         subdir=args.subdir,
+        max_parallel_workers=max(1, args.max_parallel_workers),
     )
 
     # Create and run the workflow
@@ -95,7 +104,13 @@ async def main() -> int:
     print("-" * 80)
 
     # Run the workflow
-    events = await workflow.run("start")
+    run_start = time.perf_counter()
+    try:
+        events = await workflow.run("start")
+    finally:
+        run_duration = time.perf_counter() - run_start
+        print(f"\nWorkflow run completed in {run_duration:.2f}s")
+
     outputs = events.get_outputs()
 
     if not outputs:

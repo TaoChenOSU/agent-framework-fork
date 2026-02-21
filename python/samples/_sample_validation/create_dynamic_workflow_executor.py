@@ -1,8 +1,10 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-
 import logging
+from collections import deque
+from dataclasses import dataclass
 
+from _sample_validation.const import WORKER_COMPLETED
 from _sample_validation.discovery import DiscoveryResult
 from _sample_validation.models import (
     ExecutionResult,
@@ -13,18 +15,18 @@ from _sample_validation.models import (
     WorkflowCreationResult,
 )
 from agent_framework import (
-    AgentExecutorRequest,
-    AgentExecutorResponse,
-    AgentResponse,
     Executor,
     Message,
+    Workflow,
+    WorkflowBuilder,
     WorkflowContext,
+    WorkflowEvent,
     handler,
 )
 from agent_framework.github import GitHubCopilotAgent
-from agent_framework.orchestrations import ConcurrentBuilder
 from copilot import PermissionRequest, PermissionRequestResult
 from pydantic import BaseModel
+from typing_extensions import Never
 
 logger = logging.getLogger(__name__)
 
@@ -35,21 +37,32 @@ class AgentResponseFormat(BaseModel):
     error: str
 
 
-def agent_prompt(sample: SampleInfo) -> str:
-    """Build per-sample instructions for a GitHub Copilot validator agent."""
-    return (
-        "You are validating exactly one Python sample.\n"
-        f"Sample path: {sample.relative_path}\n"
-        "Analyze the code and execute it. Determine if it runs successfully, fails, or times out.\n"
-        "The sample can be interactive. If it is interactive, response to the sample when prompted "
-        "based on your analysis of the code. You do not need to consult human on what to respond\n"
-        "Return ONLY valid JSON with this schema:\n"
-        "{\n"
-        '  "status": "success|failure|timeout|error",\n'
-        '  "output": "short summary of the result and what you did if the sample was interactive",\n'
-        '  "error": "error details or empty string"\n'
-        "}\n\n"
-    )
+@dataclass
+class CoordinatorStart:
+    samples: list[SampleInfo]
+
+
+@dataclass
+class WorkerFreed:
+    worker_id: str
+
+
+class BatchCompletion:
+    pass
+
+
+AgentInstruction = (
+    "You are validating exactly one Python sample.\n"
+    "Analyze the sample code and execute it. Determine if it runs successfully, fails, or times out.\n"
+    "The sample can be interactive. If it is interactive, response to the sample when prompted "
+    "based on your analysis of the code. You do not need to consult human on what to respond\n"
+    "Return ONLY valid JSON with this schema:\n"
+    "{\n"
+    '  "status": "success|failure|timeout|error",\n'
+    '  "output": "short summary of the result and what you did if the sample was interactive",\n'
+    '  "error": "error details or empty string"\n'
+    "}\n\n"
+)
 
 
 def parse_agent_json(text: str) -> AgentResponseFormat:
@@ -94,27 +107,87 @@ class CustomAgentExecutor(Executor):
         self.agent = agent
 
     @handler
-    async def handle_request(self, request: AgentExecutorRequest, ctx: WorkflowContext[AgentExecutorResponse]) -> None:
-        """Execute the agent with the given request and return its response."""
+    async def handle_task(self, sample: SampleInfo, ctx: WorkflowContext[WorkerFreed | RunResult]) -> None:
+        """Execute one sample task and notify collector + coordinator."""
         try:
-            response = await self.agent.run(request.messages)
-            await ctx.send_message(AgentExecutorResponse(executor_id=self.id, agent_response=response))
+            response = await self.agent.run([
+                Message(role="user", text=f"Validate the following sample:\n\n{sample.relative_path}")
+            ])
+            result_payload = parse_agent_json(response.text)
+            result = RunResult(
+                sample=sample,
+                status=status_from_text(result_payload.status),
+                output=result_payload.output,
+                error=result_payload.error,
+            )
         except Exception as ex:
             logger.error(f"Error executing agent {self.agent.id}: {ex}")
-            error_response = AgentExecutorResponse(
-                executor_id=self.id,
-                agent_response=AgentResponse(
-                    messages=Message(
-                        role="assistant",
-                        text=AgentResponseFormat(
-                            status="error",
-                            output="",
-                            error=str(ex),
-                        ).model_dump_json(),
-                    )
-                ),
+            result = RunResult(
+                sample=sample,
+                status=RunStatus.ERROR,
+                output="",
+                error=str(ex),
             )
-            await ctx.send_message(error_response)
+
+        await ctx.send_message(result, target_id="collector")
+        await ctx.send_message(WorkerFreed(worker_id=self.id), target_id="coordinator")
+
+        await ctx.add_event(WorkflowEvent(WORKER_COMPLETED, sample))  # type: ignore
+
+
+class BatchCoordinatorExecutor(Executor):
+    """Dispatch sample tasks to worker executors in bounded batches."""
+
+    def __init__(self, worker_ids: list[str], max_parallel_workers: int) -> None:
+        super().__init__(id="coordinator")
+        self._worker_ids = worker_ids
+        self._max_parallel_workers = max(1, max_parallel_workers)
+        self._pending: deque[SampleInfo] = deque()
+        self._inflight: set[str] = set()
+
+    async def _assign_next(self, worker_id: str, ctx: WorkflowContext[SampleInfo | BatchCompletion]) -> None:
+        if not self._pending:
+            await ctx.send_message(BatchCompletion(), target_id="collector")
+            return
+
+        sample = self._pending.popleft()
+        self._inflight.add(worker_id)
+        # Messages will get queued in the runner until the next superstep whe all workers are freed,
+        # thus achieving automatic batching without needing complex synchronization logic
+        await ctx.send_message(sample, target_id=worker_id)
+
+    @handler
+    async def on_start(self, start: CoordinatorStart, ctx: WorkflowContext[SampleInfo | BatchCompletion]) -> None:
+        """Initialize queue and dispatch first wave of tasks."""
+        self._pending = deque(start.samples)
+        self._inflight.clear()
+
+        for worker_id in self._worker_ids[: self._max_parallel_workers]:
+            await self._assign_next(worker_id, ctx)
+
+    @handler
+    async def on_worker_freed(self, freed: WorkerFreed, ctx: WorkflowContext[SampleInfo | BatchCompletion]) -> None:
+        """Dispatch next queued sample when a worker finishes."""
+        self._inflight.discard(freed.worker_id)
+        await self._assign_next(freed.worker_id, ctx)
+
+
+class CollectorExecutor(Executor):
+    """Collect per-sample results and emit the final execution result."""
+
+    def __init__(self) -> None:
+        super().__init__(id="collector")
+        self._results: list[RunResult] = []
+
+    @handler
+    async def on_all(self, batch_completion: BatchCompletion, ctx: WorkflowContext[Never, ExecutionResult]) -> None:
+        """Receive all results at once and emit final output."""
+        await ctx.yield_output(ExecutionResult(results=self._results))
+
+    @handler
+    async def on_item(self, item: RunResult, ctx: WorkflowContext) -> None:
+        """Record a result and emit output when all expected results arrive."""
+        self._results.append(item)
 
 
 class CreateConcurrentValidationWorkflowExecutor(Executor):
@@ -130,83 +203,42 @@ class CreateConcurrentValidationWorkflowExecutor(Executor):
         discovery: DiscoveryResult,
         ctx: WorkflowContext[WorkflowCreationResult],
     ) -> None:
-        """Create a nested concurrent workflow with N GitHub Copilot agents."""
+        """Create a nested workflow with a coordinator + worker fan-out/fan-in."""
         sample_count = len(discovery.samples)
-        print(f"\nCreating nested concurrent workflow with {sample_count} parallel GitHub agents...")
+        print(f"\nCreating nested batched workflow for {sample_count} samples...")
 
         if sample_count == 0:
             await ctx.send_message(WorkflowCreationResult(samples=[], workflow=None, agents=[]))
             return
 
         agents: list[GitHubCopilotAgent] = []
-        sample_by_agent_id: dict[str, SampleInfo] = {}
+        workers: list[CustomAgentExecutor] = []
 
         for index, sample in enumerate(discovery.samples, start=1):
-            agent_id = f"sample_validator_{index}"
+            agent_id = f"sample_validator_{index}({sample.relative_path})"
             agent = GitHubCopilotAgent(
                 id=agent_id,
                 name=agent_id,
-                instructions=agent_prompt(sample),
+                instructions=AgentInstruction,
                 default_options={"on_permission_request": prompt_permission, "timeout": 180},  # type: ignore
             )
             agents.append(agent)
-            sample_by_agent_id[agent_id] = sample
 
-        async def aggregate_results(results: list[AgentExecutorResponse]) -> ExecutionResult:
-            run_results: list[RunResult] = []
+            workers.append(CustomAgentExecutor(agent))
 
-            for result in results:
-                executor_id = result.executor_id
-                sample = sample_by_agent_id.get(executor_id)
-
-                if sample is None:
-                    continue
-
-                try:
-                    result_payload = parse_agent_json(result.agent_response.text)
-                    run_results.append(
-                        RunResult(
-                            sample=sample,
-                            status=status_from_text(result_payload.status),
-                            output=result_payload.output,
-                            error=result_payload.error,
-                        )
-                    )
-                except Exception as ex:
-                    run_results.append(
-                        RunResult(
-                            sample=sample,
-                            status=RunStatus.ERROR,
-                            output="",
-                            error=(
-                                f"Failed to parse agent output for {sample.relative_path}: {ex}. "
-                                f"Raw: {result.agent_response.text}"  # type: ignore
-                            ),
-                        )
-                    )
-
-            unresolved = [
-                sample
-                for sample in discovery.samples
-                if sample.relative_path not in {r.sample.relative_path for r in run_results}
-            ]
-            for sample in unresolved:
-                run_results.append(
-                    RunResult(
-                        sample=sample,
-                        status=RunStatus.ERROR,
-                        output="",
-                        error=f"No response from agent for sample {sample.relative_path}.",
-                    )
-                )
-
-            return ExecutionResult(results=run_results)
-
-        nested_workflow = (
-            ConcurrentBuilder(participants=[CustomAgentExecutor(agent) for agent in agents])
-            .with_aggregator(aggregate_results)
-            .build()
+        coordinator = BatchCoordinatorExecutor(
+            worker_ids=[worker.id for worker in workers],
+            max_parallel_workers=self.config.max_parallel_workers,
         )
+        collector = CollectorExecutor()
+
+        nested_builder = WorkflowBuilder(start_executor=coordinator, output_executors=[collector])
+        nested_builder.add_edge(coordinator, collector)
+        for worker in workers:
+            nested_builder.add_edge(coordinator, worker)
+            nested_builder.add_edge(worker, coordinator)
+            nested_builder.add_edge(worker, collector)
+        nested_workflow: Workflow = nested_builder.build()
 
         await ctx.send_message(
             WorkflowCreationResult(
