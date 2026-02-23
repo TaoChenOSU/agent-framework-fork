@@ -181,13 +181,3 @@ If an agent returns non-JSON content, that sample is marked as `ERROR` with pars
 ### GitHub Copilot authentication or CLI issues
 
 Ensure GitHub Copilot is authenticated in your environment and the Copilot CLI is available.
-
-## Extending
-
-### Custom Per-Sample Validation Prompt
-
-Modify `agent_prompt()` in `create_dynamic_workflow_executor.py`.
-
-### Custom Report Formats
-
-Extend `Report.to_markdown()` or `Report.to_dict()` in `models.py`.

@@ -24,7 +24,7 @@ from agent_framework import (
     handler,
 )
 from agent_framework.github import GitHubCopilotAgent
-from copilot import PermissionRequest, PermissionRequestResult
+from copilot.types import PermissionRequest, PermissionRequestResult
 from pydantic import BaseModel
 from typing_extensions import Never
 
@@ -54,7 +54,7 @@ class BatchCompletion:
 AgentInstruction = (
     "You are validating exactly one Python sample.\n"
     "Analyze the sample code and execute it. Determine if it runs successfully, fails, or times out.\n"
-    "The sample can be interactive. If it is interactive, response to the sample when prompted "
+    "The sample can be interactive. If it is interactive, respond to the sample when prompted "
     "based on your analysis of the code. You do not need to consult human on what to respond\n"
     "Return ONLY valid JSON with this schema:\n"
     "{\n"
@@ -98,7 +98,7 @@ def prompt_permission(request: PermissionRequest, context: dict[str, str]) -> Pe
 class CustomAgentExecutor(Executor):
     """Executor that runs a GitHub Copilot agent and returns its response.
 
-    We need the custome executor to wrap the agent call in a try/except to ensure that any exceptions are caught and
+    We need the custom executor to wrap the agent call in a try/except to ensure that any exceptions are caught and
     returned as error responses, otherwise an exception in one agent could crash the entire workflow.
     """
 
@@ -147,12 +147,15 @@ class BatchCoordinatorExecutor(Executor):
 
     async def _assign_next(self, worker_id: str, ctx: WorkflowContext[SampleInfo | BatchCompletion]) -> None:
         if not self._pending:
-            await ctx.send_message(BatchCompletion(), target_id="collector")
+            # No more samples to assign
+            if not self._inflight:
+                # All tasks are completed, notify collector and exit
+                await ctx.send_message(BatchCompletion(), target_id="collector")
             return
 
         sample = self._pending.popleft()
         self._inflight.add(worker_id)
-        # Messages will get queued in the runner until the next superstep whe all workers are freed,
+        # Messages will get queued in the runner until the next superstep when all workers are freed,
         # thus achieving automatic batching without needing complex synchronization logic
         await ctx.send_message(sample, target_id=worker_id)
 

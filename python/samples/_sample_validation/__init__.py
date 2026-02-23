@@ -11,7 +11,7 @@ A workflow-based system for validating Python samples by:
 
 Usage:
     uv run python -m _sample_validation
-    uv run python -m _sample_validation --subdir getting_started
+    uv run python -m _sample_validation --subdir 01-get-started
 """
 
 from _sample_validation.models import Report, RunResult, SampleInfo
