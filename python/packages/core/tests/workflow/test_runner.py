@@ -21,7 +21,7 @@ from agent_framework import (
     handler,
 )
 from agent_framework._workflows._const import EXECUTOR_STATE_KEY
-from agent_framework._workflows._edge import SingleEdgeGroup
+from agent_framework._workflows._edge import FanOutEdgeGroup, SingleEdgeGroup
 from agent_framework._workflows._runner import Runner
 from agent_framework._workflows._runner_context import (
     InProcRunnerContext,
@@ -223,6 +223,79 @@ async def test_runner_run_iteration_delivers_different_edge_runners_concurrently
 
     assert blocking_edge_runner.call_count == 1
     assert probe_edge_runner.call_count == 1
+
+
+async def test_fanout_edge_runner_delivers_to_multiple_targets_concurrently() -> None:
+    """Test that FanOutEdgeRunner delivers messages to multiple targets concurrently.
+
+    This verifies that when a message is broadcast through a FanOutEdgeGroup (no target_id),
+    the runner delivers to all targets concurrently rather than sequentially.
+    """
+
+    class BlockingExecutor(Executor):
+        """An executor that blocks until released, used to detect concurrent execution."""
+
+        def __init__(self, id: str) -> None:
+            super().__init__(id=id)
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.call_count = 0
+
+        @handler
+        async def handle(self, message: MockMessage, ctx: WorkflowContext[MockMessage, int]) -> None:
+            self.call_count += 1
+            self.started.set()
+            await self.release.wait()
+
+    class ProbeExecutor(Executor):
+        """An executor that completes immediately, used to probe concurrent execution."""
+
+        def __init__(self, id: str) -> None:
+            super().__init__(id=id)
+            self.probe_completed = asyncio.Event()
+            self.call_count = 0
+
+        @handler
+        async def handle(self, message: MockMessage, ctx: WorkflowContext[MockMessage, int]) -> None:
+            self.call_count += 1
+            self.probe_completed.set()
+
+    source = MockExecutor(id="source")
+    blocking_target = BlockingExecutor(id="blocking_target")
+    probe_target = ProbeExecutor(id="probe_target")
+
+    # FanOutEdgeGroup broadcasts messages to multiple targets
+    edge_group = FanOutEdgeGroup(source_id=source.id, target_ids=[blocking_target.id, probe_target.id])
+
+    executors: dict[str, Executor] = {
+        source.id: source,
+        blocking_target.id: blocking_target,
+        probe_target.id: probe_target,
+    }
+
+    ctx = InProcRunnerContext()
+    state = State()
+    runner = Runner([edge_group], executors, state, ctx, "test_name", graph_signature_hash="test_hash")
+
+    # Queue a message from source (will be delivered to both targets via FanOut)
+    await ctx.send_message(WorkflowMessage(data=MockMessage(data=1), source_id=source.id))
+
+    iteration_task = asyncio.create_task(runner._run_iteration())
+
+    # Wait for the blocking executor to start
+    await blocking_target.started.wait()
+
+    # If FanOut delivers concurrently, the probe should complete while blocking is still waiting
+    # If sequential, this would timeout because probe wouldn't start until blocking finishes
+    await asyncio.wait_for(probe_target.probe_completed.wait(), timeout=2.0)
+
+    # Release the blocking executor to allow iteration to complete
+    blocking_target.release.set()
+    await iteration_task
+
+    # Both executors should have been called exactly once
+    assert blocking_target.call_count == 1
+    assert probe_target.call_count == 1
 
 
 async def test_runner_already_running():
