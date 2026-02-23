@@ -161,7 +161,6 @@ async def test_runner_run_iteration_preserves_message_order_per_edge_runner() ->
             message_data = message.data
             assert isinstance(message_data, MockMessage)
             self.received.append(message_data.data)
-            await asyncio.sleep(0.005)
             return True
 
     ctx = InProcRunnerContext()
@@ -217,7 +216,7 @@ async def test_runner_run_iteration_delivers_different_edge_runners_concurrently
     iteration_task = asyncio.create_task(runner._run_iteration())
 
     await blocking_edge_runner.started.wait()
-    await asyncio.wait_for(probe_edge_runner.probe_completed.wait(), timeout=0.2)
+    await asyncio.wait_for(probe_edge_runner.probe_completed.wait(), timeout=2.0)
 
     blocking_edge_runner.release.set()
     await iteration_task

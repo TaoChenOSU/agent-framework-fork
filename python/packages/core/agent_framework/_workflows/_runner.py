@@ -158,6 +158,27 @@ class Runner:
             self._running = False
 
     async def _run_iteration(self) -> None:
+        """Run a single iteration of the workflow.
+
+        Messages are delivered through edge runners. A source executor may have multiple outgoing edge
+        runners. All edge runners run concurrently, but messages sent through the same edge runner are
+        delivered in the order they were sent to preserve message ordering guarantees per edge.
+
+        What this means in practice:
+        - A message from a source to multiple target is delivered to all targets concurrently.
+        - Multiple messages from a source to the same target are delivered in the order they were sent.
+        - Multiple messages from different sources to the same target can be delivered to the target one
+          at a time in any order, because true parallelism is not realized in Python.
+        - Multiple message from different sources to different targets are delivered concurrently to all
+          targets, assuming each message is targeting a unique target, or it falls back to the previous
+          rules if there are multiple messages targeting the same target.
+        - Special case: if using a fan-out edge runner (or derived edge runner that replicates messages
+          to multiple targets such as multi-selection or switch-case) to send messages to targets from
+          a source by specifying the target, the messages will be delivered to the specified targets
+          in the order they were sent. This is because all messages go through the same edge runner instance
+          which preserves message order.
+        """
+
         async def _deliver_messages(source_executor_id: str, source_messages: list[WorkflowMessage]) -> None:
             """Outer loop to concurrently deliver messages from all sources to their targets."""
 
