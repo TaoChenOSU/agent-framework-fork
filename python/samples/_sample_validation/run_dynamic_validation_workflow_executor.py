@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from _sample_validation.const import WORKER_COMPLETED
 from _sample_validation.create_dynamic_workflow_executor import CoordinatorStart
