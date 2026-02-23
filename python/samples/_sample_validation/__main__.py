@@ -69,6 +69,12 @@ Examples:
         help="Maximum number of samples to run in parallel per batch (default: 10)",
     )
 
+    parser.add_argument(
+        "--report-name",
+        type=str,
+        help="Custom name for the report files (without extension). If not provided, uses timestamp.",
+    )
+
     return parser.parse_args()
 
 
@@ -122,7 +128,7 @@ async def main() -> int:
     # Save report if requested
     if args.save_report:
         output_dir = samples_dir / args.output_dir
-        md_path, json_path = save_report(report, output_dir)
+        md_path, json_path = save_report(report, output_dir, name=args.report_name)
         print("\nReports saved:")
         print(f"   Markdown: {md_path}")
         print(f"   JSON: {json_path}")

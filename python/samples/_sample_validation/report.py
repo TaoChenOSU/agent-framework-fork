@@ -33,27 +33,32 @@ def generate_report(results: list[RunResult]) -> Report:
     )
 
 
-def save_report(report: Report, output_dir: Path) -> tuple[Path, Path]:
+def save_report(report: Report, output_dir: Path, name: str | None = None) -> tuple[Path, Path]:
     """
     Save the report to markdown and JSON files.
 
     Args:
         report: The report to save
         output_dir: Directory to save the report files
+        name: Optional custom name for the report files (without extension)
 
     Returns:
         Tuple of (markdown_path, json_path)
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp_str = report.timestamp.strftime("%Y%m%d_%H%M%S")
+    if name:
+        base_name = name
+    else:
+        timestamp_str = report.timestamp.strftime("%Y%m%d_%H%M%S")
+        base_name = f"validation_report_{timestamp_str}"
 
     # Save markdown
-    md_path = output_dir / f"validation_report_{timestamp_str}.md"
+    md_path = output_dir / f"{base_name}.md"
     md_path.write_text(report.to_markdown(), encoding="utf-8")
 
     # Save JSON
-    json_path = output_dir / f"validation_report_{timestamp_str}.json"
+    json_path = output_dir / f"{base_name}.json"
     json_path.write_text(
         json.dumps(report.to_dict(), indent=2),
         encoding="utf-8",
