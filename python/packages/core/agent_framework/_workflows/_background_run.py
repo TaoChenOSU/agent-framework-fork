@@ -60,9 +60,18 @@ class BackgroundRunHandle:
             list if no events are available.
         """
         events: list[WorkflowEvent[Any]] = []
+        # Use get_nowait() in a loop to drain all available events.
+        # This is safe from race conditions because asyncio uses cooperative
+        # multitasking: since we never await inside this loop, no other
+        # coroutine (including the background task producing events) can
+        # execute until we finish. This guarantees we get a consistent
+        # snapshot of all events queued at the moment poll() was called.
         while True:
             try:
                 events.append(self._event_queue.get_nowait())
             except asyncio.QueueEmpty:
+                # Queue is empty — we've drained all currently available events.
+                # Any events added after this point will be picked up in the
+                # next poll() call.
                 break
         return events
