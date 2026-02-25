@@ -556,7 +556,8 @@ class Workflow(DictConvertible):
 
         This is a one-shot execution: the workflow runs until it reaches an idle
         state (or fails), after which :attr:`BackgroundRunHandle.is_idle` becomes
-        ``True``. To resume (e.g. with responses), call ``run_in_background`` again.
+        ``True``. To resume, call :meth:`BackgroundRunHandle.respond` which
+        automatically restarts the runner, or call ``run_in_background`` again.
 
         Args:
             message: Initial message for the start executor. Required for new workflow runs.
@@ -579,7 +580,11 @@ class Workflow(DictConvertible):
 
         event_queue: asyncio.Queue[WorkflowEvent[Any]] = asyncio.Queue()
 
-        async def _background_producer() -> None:
+        async def _background_producer(
+            message: Any | None = None,
+            responses: dict[str, Any] | None = None,
+            checkpoint_id: str | None = None,
+        ) -> None:
             try:
                 async for event in self._run_core(
                     message=message,
@@ -598,8 +603,35 @@ class Workflow(DictConvertible):
             finally:
                 await self._run_cleanup(checkpoint_storage)
 
-        task = asyncio.create_task(_background_producer())
-        return BackgroundRunHandle(task, event_queue)
+        async def _resume_producer() -> None:
+            """Producer for resuming after respond() injects messages into the context."""
+            try:
+                async for event in self._run_workflow_with_tracing(
+                    initial_executor_fn=None,
+                    reset_context=False,
+                    streaming=True,
+                    run_kwargs=kwargs if kwargs else None,
+                ):
+                    await event_queue.put(event)
+            except Exception:
+                logger.debug("Background workflow run completed with error; events already enqueued.")
+            finally:
+                await self._run_cleanup(checkpoint_storage)
+
+        async def _resume() -> asyncio.Task[None]:  # noqa: RUF029
+            """Resume the workflow by launching a new producer task.
+
+            The responses have already been injected into the runner context
+            by :meth:`BackgroundRunHandle.respond`, so the messages are ready
+            for the next ``run_until_convergence`` cycle.
+            """
+            self._ensure_not_running()
+            return asyncio.create_task(_resume_producer())
+
+        task = asyncio.create_task(
+            _background_producer(message=message, responses=responses, checkpoint_id=checkpoint_id)
+        )
+        return BackgroundRunHandle(task, event_queue, self._runner_context, _resume)
 
     async def _run_core(
         self,

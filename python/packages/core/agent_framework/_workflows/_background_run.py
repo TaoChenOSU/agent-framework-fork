@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ._events import WorkflowEvent
+from ._runner_context import RunnerContext
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,10 @@ class BackgroundRunHandle:
     are buffered in an internal queue until the caller drains them via
     :meth:`poll`.
 
+    Responses to ``request_info`` events can be sent while the workflow is
+    still running via :meth:`respond`, enabling hot-path / cold-path
+    parallelism.
+
     Example:
         .. code-block:: python
 
@@ -26,18 +32,30 @@ class BackgroundRunHandle:
             while not handle.is_idle:
                 events = await handle.poll()
                 for event in events:
-                    print(event)
+                    if event.type == "request_info":
+                        await handle.respond({event.request_id: answer})
     """
 
-    def __init__(self, task: asyncio.Task[None], event_queue: asyncio.Queue[WorkflowEvent[Any]]) -> None:
+    def __init__(
+        self,
+        task: asyncio.Task[None],
+        event_queue: asyncio.Queue[WorkflowEvent[Any]],
+        runner_context: RunnerContext,
+        resume_fn: Callable[[], Awaitable[asyncio.Task[None]]],
+    ) -> None:
         """Initialize the background run handle.
 
         Args:
             task: The asyncio task running the workflow.
             event_queue: The queue where workflow events are buffered.
+            runner_context: The runner context for injecting responses.
+            resume_fn: Callback that creates and returns a new producer task
+                to resume the workflow after it has converged.
         """
         self._task = task
         self._event_queue = event_queue
+        self._runner_context = runner_context
+        self._resume_fn = resume_fn
 
     @property
     def is_idle(self) -> bool:
@@ -75,3 +93,24 @@ class BackgroundRunHandle:
                 # next poll() call.
                 break
         return events
+
+    async def respond(self, responses: dict[str, Any]) -> None:
+        """Send responses to pending ``request_info`` events.
+
+        If the workflow is still running, the responses are injected into the
+        runner context and picked up in the next superstep. If the workflow
+        has already converged (idle), the responses are injected and the
+        runner is automatically resumed.
+
+        Args:
+            responses: A mapping of request IDs to response data.
+
+        Raises:
+            ValueError: If a request ID is unknown.
+            TypeError: If a response type does not match the expected type.
+        """
+        for request_id, response in responses.items():
+            await self._runner_context.send_request_info_response(request_id, response)
+
+        if self.is_idle:
+            self._task = await self._resume_fn()

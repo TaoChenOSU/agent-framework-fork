@@ -14,6 +14,7 @@ from agent_framework import (
     WorkflowEvent,
     WorkflowRunState,
     handler,
+    response_handler,
 )
 
 
@@ -224,3 +225,165 @@ async def test_run_in_background_rejects_invalid_params() -> None:
 
     with pytest.raises(ValueError, match="Cannot provide both"):
         workflow.run_in_background(NumberMessage(data=0), responses={"r1": "yes"})
+
+
+# --- respond() ---
+
+
+@dataclass
+class ApprovalRequest:
+    """Request payload for approval."""
+
+    prompt: str
+
+
+@dataclass
+class ApprovalResponse:
+    """Response payload for approval."""
+
+    approved: bool
+
+
+class RequestApprovalExecutor(Executor):
+    """Executor that requests approval, then yields output based on the response."""
+
+    @handler
+    async def on_message(self, message: NumberMessage, ctx: WorkflowContext) -> None:
+        ctx.set_state(self.id, message.data)
+        await ctx.request_info(ApprovalRequest(prompt="Approve?"), ApprovalResponse)
+
+    @response_handler
+    async def on_response(
+        self,
+        original_request: ApprovalRequest,
+        response: ApprovalResponse,
+        ctx: WorkflowContext[NumberMessage, int],
+    ) -> None:
+        data = ctx.get_state(self.id)
+        assert isinstance(data, int)
+        if response.approved:
+            await ctx.yield_output(data)
+        else:
+            await ctx.yield_output(-1)
+
+
+class PassthroughExecutor(Executor):
+    """Executor that forwards the input message downstream."""
+
+    @handler
+    async def handle(self, message: NumberMessage, ctx: WorkflowContext[NumberMessage]) -> None:
+        await ctx.send_message(message)
+
+
+class SlowExecutor(Executor):
+    """Executor that sleeps before yielding output, simulating a hot path."""
+
+    def __init__(self, id: str, *, delay: float = 0.1) -> None:
+        super().__init__(id=id)
+        self.delay = delay
+
+    @handler
+    async def handle(self, message: NumberMessage, ctx: WorkflowContext[NumberMessage, int]) -> None:
+        await asyncio.sleep(self.delay)
+        await ctx.yield_output(message.data * 100)
+
+
+async def test_respond_after_idle_auto_resumes() -> None:
+    """respond() after idle injects the response and auto-resumes the runner."""
+    approval = RequestApprovalExecutor(id="approval")
+    workflow = WorkflowBuilder(start_executor=approval).build()
+
+    handle = workflow.run_in_background(NumberMessage(data=42))
+    all_events = await _wait_and_collect(handle)
+
+    # Workflow should be idle with a pending request
+    assert handle.is_idle
+    request_events = [e for e in all_events if e.type == "request_info"]
+    assert len(request_events) == 1
+
+    # Respond — this should auto-resume
+    await handle.respond({request_events[0].request_id: ApprovalResponse(approved=True)})
+    assert not handle.is_idle  # Runner restarted
+
+    resumed_events = await _wait_and_collect(handle)
+    assert handle.is_idle
+
+    output_events = [e for e in resumed_events if e.type == "output"]
+    assert len(output_events) == 1
+    assert output_events[0].data == 42
+
+
+async def test_respond_while_running() -> None:
+    """respond() while the runner is still executing injects into the next superstep."""
+    approval = RequestApprovalExecutor(id="approval")
+    slow = SlowExecutor(id="slow", delay=0.2)
+
+    # Fan-out: start sends to both approval and slow in parallel.
+    # approval will request_info quickly; slow will keep running.
+    start = PassthroughExecutor(id="start")
+
+    workflow = (
+        WorkflowBuilder(start_executor=start)
+        .add_fan_out_edges(start, [approval, slow])
+        .build()
+    )
+
+    handle = workflow.run_in_background(NumberMessage(data=7))
+
+    # Poll until we see a request_info event (approval path)
+    request_event = None
+    for _ in range(100):
+        events = await handle.poll()
+        for e in events:
+            if e.type == "request_info":
+                request_event = e
+                break
+        if request_event is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    assert request_event is not None
+    # The slow executor is still running, so handle should not be idle
+    assert not handle.is_idle
+
+    # Respond while running
+    await handle.respond({request_event.request_id: ApprovalResponse(approved=True)})
+
+    # Wait for completion
+    remaining = await _wait_and_collect(handle)
+    all_output = [e for e in remaining if e.type == "output"]
+
+    # We should have outputs from both paths
+    output_values = sorted([e.data for e in all_output])
+    assert 7 in output_values  # approval path
+    assert 700 in output_values  # slow path (7 * 100)
+
+
+async def test_respond_with_invalid_request_id() -> None:
+    """respond() raises ValueError for unknown request IDs."""
+    approval = RequestApprovalExecutor(id="approval")
+    workflow = WorkflowBuilder(start_executor=approval).build()
+
+    handle = workflow.run_in_background(NumberMessage(data=1))
+    await _wait_and_collect(handle)
+
+    with pytest.raises(ValueError, match="No pending request found"):
+        await handle.respond({"nonexistent_id": ApprovalResponse(approved=True)})
+
+
+async def test_respond_multiple_sequential() -> None:
+    """Multiple sequential respond() calls work correctly."""
+    approval = RequestApprovalExecutor(id="approval")
+    workflow = WorkflowBuilder(start_executor=approval).build()
+
+    # First run: request approval
+    handle = workflow.run_in_background(NumberMessage(data=10))
+    events1 = await _wait_and_collect(handle)
+    req1 = [e for e in events1 if e.type == "request_info"]
+    assert len(req1) == 1
+
+    # Deny — the executor yields -1
+    await handle.respond({req1[0].request_id: ApprovalResponse(approved=False)})
+    events2 = await _wait_and_collect(handle)
+    outputs = [e.data for e in events2 if e.type == "output"]
+    assert outputs == [-1]
