@@ -45,10 +45,11 @@ Once comfortable with these, explore the rest of the samples below.
 
 ### background-run
 
-| Sample         | File                                                                       | Concepts                                                                      |
-| -------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Basic Polling  | [background-run/basic_polling.py](./background-run/basic_polling.py)       | Start a background run, poll for events with `handle.poll()`, check `is_idle` |
-| Error Handling | [background-run/error_handling.py](./background-run/error_handling.py)     | Inspect failed events via polling, re-run workflow after failure               |
+| Sample               | File                                                                                   | Concepts                                                                      |
+| -------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Basic Polling        | [background-run/basic_polling.py](./background-run/basic_polling.py)                   | Start a background run, poll for events with `handle.poll()`, check `is_idle` |
+| Error Handling       | [background-run/error_handling.py](./background-run/error_handling.py)                 | Inspect failed events via polling, re-run workflow after failure               |
+| Respond While Running | [background-run/respond_while_running.py](./background-run/respond_while_running.py) | Fan-out hot/cold paths, `handle.respond()` while workflow is still running    |
 
 ### checkpoint
 

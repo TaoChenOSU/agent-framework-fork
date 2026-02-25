@@ -76,6 +76,7 @@ async def main():
     all_events = []
     while not handle.is_idle:
         all_events.extend(await handle.poll())
+        # Throttle polling; poll() is non-blocking and returns immediately.
         await asyncio.sleep(0.01)
     all_events.extend(await handle.poll())
 
