@@ -60,9 +60,9 @@ async def main():
     # Poll for events until the workflow becomes idle.
     all_events: list[WorkflowEvent] = []
     while not handle.is_idle:
+        # The workflow continues running in the background while we process events.
         events = await handle.poll()
         all_events.extend(events)
-        # In a real application you might do other work here between polls.
         await asyncio.sleep(0.01)
 
     # Drain any remaining events produced just before idle was detected.

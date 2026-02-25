@@ -131,6 +131,7 @@ async def main():
     handle = workflow.run_in_background(TaskInput(value=0))
 
     # Single poll loop: process all events and respond to requests inline.
+    # The workflow continues running in the background while we process events.
     outputs: list[str] = []
     while not handle.is_idle:
         for event in await handle.poll():

@@ -60,6 +60,7 @@ async def main():
 
     all_events: list[WorkflowEvent] = []
     while not handle.is_idle:
+        # The workflow continues running in the background while we process events.
         all_events.extend(await handle.poll())
         await asyncio.sleep(0.01)
     all_events.extend(await handle.poll())
@@ -75,6 +76,7 @@ async def main():
 
     all_events = []
     while not handle.is_idle:
+        # The workflow continues running in the background while we process events.
         all_events.extend(await handle.poll())
         # Throttle polling; poll() is non-blocking and returns immediately.
         await asyncio.sleep(0.01)
@@ -95,6 +97,7 @@ async def main():
 
     all_events = []
     while not handle.is_idle:
+        # The workflow continues running in the background while we process events.
         all_events.extend(await handle.poll())
         await asyncio.sleep(0.01)
     all_events.extend(await handle.poll())
