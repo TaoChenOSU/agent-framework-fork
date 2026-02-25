@@ -1,0 +1,68 @@
+# Copyright (c) Microsoft. All rights reserved.
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+from ._events import WorkflowEvent
+
+logger = logging.getLogger(__name__)
+
+
+class BackgroundRunHandle:
+    """Handle for a workflow running in the background.
+
+    Provides a polling interface to consume events produced by a background
+    workflow execution. The workflow runs in an ``asyncio.Task`` and events
+    are buffered in an internal queue until the caller drains them via
+    :meth:`poll`.
+
+    Example:
+        .. code-block:: python
+
+            handle = workflow.run_in_background(message="Hello")
+            while not handle.is_idle:
+                events = await handle.poll()
+                for event in events:
+                    print(event)
+    """
+
+    def __init__(self, task: asyncio.Task[None], event_queue: asyncio.Queue[WorkflowEvent[Any]]) -> None:
+        """Initialize the background run handle.
+
+        Args:
+            task: The asyncio task running the workflow.
+            event_queue: The queue where workflow events are buffered.
+        """
+        self._task = task
+        self._event_queue = event_queue
+
+    @property
+    def is_idle(self) -> bool:
+        """Whether the background task has finished producing events.
+
+        This becomes ``True`` when the background task completes, which happens
+        when the workflow reaches any terminal run state — including
+        :attr:`~WorkflowRunState.IDLE`,
+        :attr:`~WorkflowRunState.IDLE_WITH_PENDING_REQUESTS`, or
+        :attr:`~WorkflowRunState.FAILED`. To determine which state the workflow
+        ended in, inspect the status events returned by :meth:`poll`.
+        """
+        return self._task.done()
+
+    async def poll(self) -> list[WorkflowEvent[Any]]:
+        """Drain all currently queued events without blocking.
+
+        Returns:
+            A list of events produced since the last poll. Returns an empty
+            list if no events are available.
+        """
+        events: list[WorkflowEvent[Any]] = []
+        while True:
+            try:
+                events.append(self._event_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return events
