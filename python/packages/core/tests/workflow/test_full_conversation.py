@@ -1,11 +1,10 @@
 # Copyright (c) Microsoft. All rights reserved.
 
-from collections.abc import AsyncIterable, Awaitable, Sequence
-from typing import Any
+from collections.abc import AsyncIterable, Awaitable
+from typing import Any, Literal, overload
 
 import pytest
 from pydantic import PrivateAttr
-from typing_extensions import Never
 
 from agent_framework import (
     AgentExecutor,
@@ -13,6 +12,7 @@ from agent_framework import (
     AgentExecutorResponse,
     AgentResponse,
     AgentResponseUpdate,
+    AgentRunInputs,
     AgentSession,
     BaseAgent,
     Content,
@@ -34,14 +34,18 @@ class _SimpleAgent(BaseAgent):
         super().__init__(**kwargs)
         self._reply_text = reply_text
 
+    @overload
+    def run(self, messages: AgentRunInputs | None = ..., *, stream: Literal[False] = ..., session: AgentSession | None = ..., **kwargs: Any) -> Awaitable[AgentResponse[Any]]: ...
+    @overload
+    def run(self, messages: AgentRunInputs | None = ..., *, stream: Literal[True], session: AgentSession | None = ..., **kwargs: Any) -> ResponseStream[AgentResponseUpdate, AgentResponse[Any]]: ...
     def run(
         self,
-        messages: str | Content | Message | Sequence[str | Content | Message] | None = None,
+        messages: AgentRunInputs | None = None,
         *,
         stream: bool = False,
         session: AgentSession | None = None,
         **kwargs: Any,
-    ) -> Awaitable[AgentResponse] | ResponseStream[AgentResponseUpdate, AgentResponse]:
+    ) -> Awaitable[AgentResponse[Any]] | ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
         if stream:
 
             async def _stream() -> AsyncIterable[AgentResponseUpdate]:
@@ -81,14 +85,18 @@ class _ToolHistoryAgent(BaseAgent):
             Message(role="assistant", contents=[Content.from_text(text=self._summary_text)]),
         ]
 
+    @overload
+    def run(self, messages: AgentRunInputs | None = ..., *, stream: Literal[False] = ..., session: AgentSession | None = ..., **kwargs: Any) -> Awaitable[AgentResponse[Any]]: ...
+    @overload
+    def run(self, messages: AgentRunInputs | None = ..., *, stream: Literal[True], session: AgentSession | None = ..., **kwargs: Any) -> ResponseStream[AgentResponseUpdate, AgentResponse[Any]]: ...
     def run(
         self,
-        messages: str | Content | Message | Sequence[str | Content | Message] | None = None,
+        messages: AgentRunInputs | None = None,
         *,
         stream: bool = False,
         session: AgentSession | None = None,
         **kwargs: Any,
-    ) -> Awaitable[AgentResponse] | ResponseStream[AgentResponseUpdate, AgentResponse]:
+    ) -> Awaitable[AgentResponse[Any]] | ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
         if stream:
 
             async def _stream() -> AsyncIterable[AgentResponseUpdate]:
@@ -120,7 +128,7 @@ class _CaptureFullConversation(Executor):
     """Captures AgentExecutorResponse.full_conversation and completes the workflow."""
 
     @handler
-    async def capture(self, response: AgentExecutorResponse, ctx: WorkflowContext[Never, dict[str, Any]]) -> None:
+    async def capture(self, response: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest, dict[str, Any]]) -> None:
         full = response.full_conversation
         # The AgentExecutor contract guarantees full_conversation is populated.
         assert full is not None
@@ -165,14 +173,18 @@ class _CaptureAgent(BaseAgent):
         super().__init__(**kwargs)
         self._reply_text = reply_text
 
+    @overload
+    def run(self, messages: AgentRunInputs | None = ..., *, stream: Literal[False] = ..., session: AgentSession | None = ..., **kwargs: Any) -> Awaitable[AgentResponse[Any]]: ...
+    @overload
+    def run(self, messages: AgentRunInputs | None = ..., *, stream: Literal[True], session: AgentSession | None = ..., **kwargs: Any) -> ResponseStream[AgentResponseUpdate, AgentResponse[Any]]: ...
     def run(
         self,
-        messages: str | Content | Message | Sequence[str | Content | Message] | None = None,
+        messages: AgentRunInputs | None = None,
         *,
         stream: bool = False,
         session: AgentSession | None = None,
         **kwargs: Any,
-    ) -> Awaitable[AgentResponse] | ResponseStream[AgentResponseUpdate, AgentResponse]:
+    ) -> Awaitable[AgentResponse[Any]] | ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
         # Normalize and record messages for verification
         norm: list[Message] = []
         if messages:
@@ -260,7 +272,7 @@ class _RoundTripCoordinator(Executor):
     async def handle_response(
         self,
         response: AgentExecutorResponse,
-        ctx: WorkflowContext[Never, dict[str, Any]],
+        ctx: WorkflowContext[AgentExecutorRequest, dict[str, Any]],
     ) -> None:
         self._seen += 1
         if self._seen == 1:
@@ -314,14 +326,18 @@ class _SessionIdCapturingAgent(BaseAgent):
 
     _captured_service_session_id: str | None = PrivateAttr(default="NOT_CAPTURED")
 
+    @overload
+    def run(self, messages: AgentRunInputs | None = ..., *, stream: Literal[False] = ..., session: AgentSession | None = ..., **kwargs: Any) -> Awaitable[AgentResponse[Any]]: ...
+    @overload
+    def run(self, messages: AgentRunInputs | None = ..., *, stream: Literal[True], session: AgentSession | None = ..., **kwargs: Any) -> ResponseStream[AgentResponseUpdate, AgentResponse[Any]]: ...
     def run(
         self,
-        messages: str | Content | Message | Sequence[str | Content | Message] | None = None,
+        messages: AgentRunInputs | None = None,
         *,
         stream: bool = False,
         session: AgentSession | None = None,
         **kwargs: Any,
-    ) -> Awaitable[AgentResponse] | ResponseStream[AgentResponseUpdate, AgentResponse]:
+    ) -> Awaitable[AgentResponse[Any]] | ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
         self._captured_service_session_id = session.service_session_id if session else None
 
         async def _run() -> AgentResponse:
@@ -342,7 +358,7 @@ class _FullHistoryReplayCoordinator(Executor):
     async def handle(
         self,
         response: AgentExecutorResponse,
-        ctx: WorkflowContext[Never, Any],
+        ctx: WorkflowContext[AgentExecutorRequest, Any],
     ) -> None:
         full_conv = list(response.full_conversation or response.agent_response.messages)
         full_conv.append(Message(role="user", text="follow-up"))
