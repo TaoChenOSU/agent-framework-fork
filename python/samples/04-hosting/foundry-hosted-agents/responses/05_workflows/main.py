@@ -2,13 +2,62 @@
 
 import os
 
-from agent_framework import Agent, AgentExecutor, WorkflowBuilder
+from agent_framework import (
+    Agent,
+    AgentExecutor,
+    AgentExecutorResponse,
+    Executor,
+    WorkflowBuilder,
+    WorkflowContext,
+    handler,
+    response_handler,
+)
 from agent_framework.foundry import FoundryChatClient, ResponsesHostServer
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
+from typing_extensions import Never
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+class ApprovalExecutor(Executor):
+    """Requests human approval for the formatted slogan before completing the workflow.
+
+    Following the same pattern as the guessing game sample, this executor pauses the workflow
+    with `ctx.request_info` and resumes in its `@response_handler` once the human replies.
+    """
+
+    def __init__(self, id: str | None = None):
+        super().__init__(id=id or "approval")
+
+    @handler
+    async def request_approval(
+        self,
+        response: AgentExecutorResponse,
+        ctx: WorkflowContext,
+    ) -> None:
+        """Take the formatted slogan and ask the human to approve it."""
+        slogan = response.agent_response.text
+        prompt = (
+            f"Please review the final slogan:\n\n{slogan}\n\n"
+            "Reply 'approve' to accept it, or reply with feedback to reject it."
+        )
+        # Pause the workflow and surface an approval request to the caller.
+        await ctx.request_info(request_data=prompt, response_type=str)
+
+    @response_handler
+    async def on_human_decision(
+        self,
+        request: str,
+        decision: str,
+        ctx: WorkflowContext[Never, str],
+    ) -> None:
+        """Complete the workflow based on the human's decision."""
+        if decision.strip().lower() == "approve":
+            await ctx.yield_output("Approved")
+        else:
+            await ctx.yield_output(f"Slogan rejected. Human feedback: {decision}")
 
 
 def main():
@@ -47,16 +96,19 @@ def main():
     writer_executor = AgentExecutor(writer_agent, context_mode="last_agent")
     legal_executor = AgentExecutor(legal_agent, context_mode="last_agent")
     format_executor = AgentExecutor(format_agent, context_mode="last_agent")
+    approval_executor = ApprovalExecutor()
 
     workflow_agent = (
         WorkflowBuilder(
             start_executor=writer_executor,
-            # Select only the formatted result as Workflow Output.
+            # Select only the approval result as Workflow Output.
             # Unselected executor payloads are hidden unless selected as Intermediate Output.
-            output_from=[format_executor],
+            output_from=[approval_executor],
         )
         .add_edge(writer_executor, legal_executor)
         .add_edge(legal_executor, format_executor)
+        # After formatting, request human approval before the workflow completes.
+        .add_edge(format_executor, approval_executor)
         .build()
         .as_agent()
     )
